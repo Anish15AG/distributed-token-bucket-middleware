@@ -1,0 +1,28 @@
+Metadata-Version: 2.4
+Name: ratelimit-mw
+Version: 0.1.0
+Summary: A cost-aware, adaptive rate limiter ASGI middleware for FastAPI
+Author-email: Your Name <your.email@example.com>
+License: MIT
+Keywords: fastapi,rate-limiting,asgi,middleware,redis
+Classifier: Development Status :: 3 - Alpha
+Classifier: Framework :: FastAPI
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi>=0.100.0
+Requires-Dist: redis>=5.0.0
+Requires-Dist: starlette>=0.27.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.4.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.21.0; extra == "dev"
+Requires-Dist: httpx>=0.24.0; extra == "dev"
+Requires-Dist: black>=23.0.0; extra == "dev"
+Requires-Dist: ruff>=0.0.290; extra == "dev"
