@@ -49,8 +49,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         while True:
             try:
                 # Create a pipeline and WATCH the key for changes
-                pipe = self.redis.pipeline(transaction=True)
-                await pipe.watch(bucket_key)
+                async with self.redis.pipeline(transaction=True) as pipe:
+                    await pipe.watch(bucket_key)
 
                 # Read current state
                 bucket_state = await pipe.hgetall(bucket_key)
@@ -92,6 +92,3 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 # Another request modified the key concurrently. 
                 # The loop will automatically retry from the beginning.
                 continue
-            finally:
-                # Reset the pipeline to return the connection to the pool
-                await pipe.reset()
