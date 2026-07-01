@@ -16,5 +16,7 @@ async def ping():
 
 @app.get("/data")
 async def get_data():
-    time.sleep(random.uniform(0.1, 0.3))
+    import asyncio
+    await asyncio.sleep(3)
+    # time.sleep(random.uniform(0.1, 0.3))
     return {"data": [1, 2, 3, 4, 5], "timestamp": time.time()}

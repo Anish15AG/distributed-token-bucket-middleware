@@ -30,3 +30,8 @@ class RateLimitConfig:
     key_resolver : Callable[[Request], str] = default_key_resolver
     cost_resolver : Callable[[Request], int] = default_cost_resolver
     org_resolver : Callable[[Request], str] = default_org_resolver
+
+    # Load Sheding config
+    health_check_url: str | None = None
+    health_check_interval: float = 5.0
+    max_load_factor: float = 3.0
