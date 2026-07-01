@@ -67,9 +67,7 @@ See [the docs](https://docs.pytest.org/en/stable/how-to/cache.html) for more inf
 # .pytest_cache/v/cache/lastfailed
 
 ```
-{
-  "tests/test_concurrency.py::test_concurrency_limit": true
-}
+{}
 ```
 
 # .pytest_cache/v/cache/nodeids
@@ -318,7 +316,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 headers={"Retry-After": str(int(retry_after) + 1)},
             )
 
-        # Pass request to the app
+
         response = await call_next(request)
 
         response.headers["X-RateLimit-Limit"] = str(self.config.capacity)
@@ -332,53 +330,56 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         while True:
             try:
-                # Create a pipeline and WATCH the key for changes
-                pipe = self.redis.pipeline(transaction=True)
-                await pipe.watch(bucket_key)
 
-                # Read current state
-                bucket_state = await pipe.hgetall(bucket_key)
-                now = time.time()
+                async with self.redis.pipeline() as pipe:
+                    
+                    await pipe.watch(bucket_key)
+                    
 
-                if not bucket_state:
-                    current_tokens = float(capacity - cost)
-                    last_refill = now
-                else:
-                    stored_tokens = float(bucket_state.get("tokens", 0))
-                    last_refill = float(bucket_state.get("last_refill", now))
-                    time_passed = now - last_refill
-                    tokens_to_add = time_passed * refill_rate
-                    current_tokens = min(capacity, stored_tokens + tokens_to_add)
+                    bucket_state = await pipe.hgetall(bucket_key)
+                    
+                    now = time.time()
 
-                # Check if user has enough tokens
-                if current_tokens < cost:
-                    await pipe.unwatch()
-                    tokens_needed = cost - current_tokens
-                    retry_after = tokens_needed / refill_rate
-                    return False, current_tokens, retry_after
+                    if not bucket_state:
+                        current_tokens = float(capacity)
+                        last_refill = now
+                    else:
+                        stored_tokens = float(bucket_state.get("tokens", 0))
+                        last_refill = float(bucket_state.get("last_refill", now))
+                        time_passed = now - last_refill
+                        tokens_to_add = time_passed * refill_rate
+                        current_tokens = min(capacity, stored_tokens + tokens_to_add)
 
-                # Consume token
-                current_tokens -= cost
+                    # Check if user has enough tokens
+                    if current_tokens < cost:
+                        tokens_needed = cost - current_tokens
+                        retry_after = tokens_needed / refill_rate
+                        
+                        await pipe.unwatch()
+                        
+                        return False, current_tokens, retry_after
 
-                # Execute the transaction atomically
-                pipe.multi()
-                pipe.hset(bucket_key, mapping={
-                    "tokens": str(current_tokens),
-                    "last_refill": str(now)
-                })
-                pipe.expire(bucket_key, 60)
-                
-                await pipe.execute()
+                    # Consume token
+                    current_tokens -= cost
 
-                return True, current_tokens, 0
+                    # Start the transaction block
+                    pipe.multi()
+                    
+                    # 5. Queue the updates
+                    pipe.hset(bucket_key, mapping={
+                        "tokens": str(current_tokens),
+                        "last_refill": str(now)
+                    })
+                    pipe.expire(bucket_key, 60)
+                    
+                    # Execute the transaction block
+                    await pipe.execute()
+
+                    return True, current_tokens, 0
 
             except WatchError:
-                # Another request modified the key concurrently. 
-                # The loop will automatically retry from the beginning.
+
                 continue
-            finally:
-                # Reset the pipeline to return the connection to the pool
-                await pipe.reset()
 ```
 
 # tests/__init__.py
@@ -393,38 +394,56 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 import asyncio
 import pytest
 import httpx
+import redis.asyncio as aioredis
+from collections import Counter
 from fastapi import FastAPI
 from ratelimit_mw import RateLimitMiddleware
 from ratelimit_mw.config import RateLimitConfig
 
+@pytest.fixture(autouse=True)
+async def clean_redis():
+    client = aioredis.from_url("redis://localhost:6379/1", decode_responses=True)
+    await client.flushdb()
+    yield
+    await client.flushdb()
+    await client.aclose()
+
 @pytest.fixture
 def app():
     application = FastAPI()
-
+    
     @application.get("/ping")
     async def ping():
-        return {"msg" : "pong"}
+        return {"msg": "pong"}
     
-    config = RateLimitConfig(capacity=10, refill_rate=0.1)
+    config = RateLimitConfig(
+        capacity=10, 
+        refill_rate=0.1,
+        redis_url="redis://localhost:6379/1"
+    )
     application.add_middleware(RateLimitMiddleware, config=config)
     return application
 
 @pytest.mark.asyncio
 async def test_concurrency_limit(app):
     transport = httpx.ASGITransport(app=app)
-
+    
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         tasks = [client.get("/ping") for _ in range(100)]
-
         responses = await asyncio.gather(*tasks)
 
         status_codes = [r.status_code for r in responses]
-        success_count = status_codes.count(200)
-        limited_count = status_codes.count(429)
-
+        counts = Counter(status_codes)
+        
+        print("\n--- STATUS CODE COUNTS ---")
+        print(counts)
+        print("--------------------------\n")
+        
+        success_count = counts.get(200, 0)
+        limited_count = counts.get(429, 0)
 
         assert success_count == 10, f"Expected 10 successes, got {success_count}"
-        assert limited_count == 90, f"Expected 90 rate limits, got {success_count}"
+        assert limited_count == 90, f"Expected 90 rate limits, got {limited_count}"
 ```
 
 # tests/test_middleware.py

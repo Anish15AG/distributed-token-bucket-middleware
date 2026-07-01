@@ -20,9 +20,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         )
 
     async def dispatch(self, request: Request, call_next) -> Response:
-        identity = request.client.host if request.client else "unknown"
+        identity = self.config.key_resolver(request)
         bucket_key = f"ratelimit:{identity}"
-        cost = 1
+
+        cost = self.config.cost_resolver(request)
 
         # Check and consume tokens
         allowed, remaining, retry_after = await self._process_bucket(bucket_key, cost)
@@ -83,7 +84,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     # Start the transaction block
                     pipe.multi()
                     
-                    # 5. Queue the updates
+                    # Queue the updates
                     pipe.hset(bucket_key, mapping={
                         "tokens": str(current_tokens),
                         "last_refill": str(now)
