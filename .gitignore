@@ -27,3 +27,4 @@ EOF
 
 git add .gitignore
 git commit -m "Initial commit: Add .gitignore"
+codebase.md
