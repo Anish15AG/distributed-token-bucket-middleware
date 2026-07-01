@@ -40,6 +40,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         response.headers["X-RateLimit-Limit"] = str(self.config.capacity)
         response.headers["X-RateLimit-Remaining"] = str(int(remaining))
+
+        # Calculation of Bucket refill time
+        tokens_needed_to_full = self.config.capacity - remaining
+        seconds_to_full = tokens_needed_to_full / self.config.refill_rate
+        reset_timestamp = int(time.time() + seconds_to_full)
+
+        response.headers["X-RateLimit-Reset"] = str(reset_timestamp)
         
         return response
 
