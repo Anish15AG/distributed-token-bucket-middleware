@@ -9,11 +9,9 @@ from .config import RateLimitConfig
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
 
-    # ASGI middleware implementation of Token Bucket Algorithm
     def __init__(self, app, config: RateLimitConfig = None):
         super().__init__(app)
         self.config = config or RateLimitConfig()
-
         self.redis = aioredis.from_url(
             self.config.redis_url,
             decode_responses=True
@@ -21,88 +19,83 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next) -> Response:
         identity = self.config.key_resolver(request)
-        bucket_key = f"ratelimit:{identity}"
-
+        org_id = self.config.org_resolver(request)
         cost = self.config.cost_resolver(request)
 
-        # Check and consume tokens
-        allowed, remaining, retry_after = await self._process_bucket(bucket_key, cost)
+        key_bucket = f"ratelimit:key:{identity}"
+        org_bucket = f"ratelimit:org:{org_id}"
+
+        allowed, remaining, retry_after = await self._process_nested_buckets(
+            key_bucket, org_bucket, cost
+        )
 
         if not allowed:
             return JSONResponse(
                 status_code=429,
-                content={"error": "Rate Limit exceeded. Please try again later"},
+                content={"error": "Rate limit exceeded. Please try again later."},
                 headers={"Retry-After": str(int(retry_after) + 1)},
             )
 
-
         response = await call_next(request)
-
         response.headers["X-RateLimit-Limit"] = str(self.config.capacity)
         response.headers["X-RateLimit-Remaining"] = str(int(remaining))
-
-        # Calculation of Bucket refill time
-        tokens_needed_to_full = self.config.capacity - remaining
-        seconds_to_full = tokens_needed_to_full / self.config.refill_rate
-        reset_timestamp = int(time.time() + seconds_to_full)
-
-        response.headers["X-RateLimit-Reset"] = str(reset_timestamp)
-        
         return response
 
-    async def _process_bucket(self, bucket_key: str, cost: int):
+    async def _process_nested_buckets(self, key_bucket: str, org_bucket: str, cost: int):
         capacity = self.config.capacity
         refill_rate = self.config.refill_rate
+        org_capacity = capacity * 5
 
         while True:
             try:
+                async with self.redis.pipeline(transaction=True) as pipe:
+                    await pipe.watch(key_bucket, org_bucket)
 
-                async with self.redis.pipeline() as pipe:
-                    
-                    await pipe.watch(bucket_key)
-                    
-
-                    bucket_state = await pipe.hgetall(bucket_key)
-                    
+                    key_state = await pipe.hgetall(key_bucket)
+                    org_state = await pipe.hgetall(org_bucket)
                     now = time.time()
 
-                    if not bucket_state:
-                        current_tokens = float(capacity)
-                        last_refill = now
+                    if not key_state:
+                        key_tokens = float(capacity)
                     else:
-                        stored_tokens = float(bucket_state.get("tokens", 0))
-                        last_refill = float(bucket_state.get("last_refill", now))
-                        time_passed = now - last_refill
-                        tokens_to_add = time_passed * refill_rate
-                        current_tokens = min(capacity, stored_tokens + tokens_to_add)
+                        stored = float(key_state.get("tokens", capacity))
+                        last = float(key_state.get("last_refill", now))
+                        key_tokens = min(capacity, stored + (now - last) * refill_rate)
 
-                    # Check if user has enough tokens
-                    if current_tokens < cost:
-                        tokens_needed = cost - current_tokens
-                        retry_after = tokens_needed / refill_rate
-                        
+                    if not org_state:
+                        org_tokens = float(org_capacity)
+                    else:
+                        stored = float(org_state.get("tokens", org_capacity))
+                        last = float(org_state.get("last_refill", now))
+                        org_tokens = min(org_capacity, stored + (now - last) * refill_rate)
+
+                    if key_tokens < cost or org_tokens < cost:
                         await pipe.unwatch()
-                        
-                        return False, current_tokens, retry_after
+                        min_tokens = min(key_tokens, org_tokens)
+                        tokens_needed = cost - min_tokens
+                        retry_after = tokens_needed / refill_rate
+                        return False, min(key_tokens, org_tokens), retry_after
 
-                    # Consume token
-                    current_tokens -= cost
+                    key_tokens -= cost
+                    org_tokens -= cost
 
-                    # Start the transaction block
                     pipe.multi()
-                    
-                    # Queue the updates
-                    pipe.hset(bucket_key, mapping={
-                        "tokens": str(current_tokens),
+
+                    pipe.hset(key_bucket, mapping={
+                        "tokens": str(key_tokens),
                         "last_refill": str(now)
                     })
-                    pipe.expire(bucket_key, 60)
-                    
-                    # Execute the transaction block
+                    pipe.expire(key_bucket, 3600)
+
+                    pipe.hset(org_bucket, mapping={
+                        "tokens": str(org_tokens),
+                        "last_refill": str(now)
+                    })
+                    pipe.expire(org_bucket, 3600)
+
                     await pipe.execute()
 
-                    return True, current_tokens, 0
+                    return True, key_tokens, 0
 
             except WatchError:
-
                 continue

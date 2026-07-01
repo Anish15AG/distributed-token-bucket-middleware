@@ -6,6 +6,9 @@ def default_key_resolver(request: Request) -> str:
     # Identifying users by their IP
     return request.client.host if request.client else "unknown"
 
+def default_org_resolver(request: Request) -> str:
+    return "default_org"
+
 def default_cost_resolver(requst: Request) -> int:
     # Cost of each requst is 1 Token
     return 1
@@ -26,3 +29,4 @@ class RateLimitConfig:
     # Pluggable Resolver
     key_resolver : Callable[[Request], str] = default_key_resolver
     cost_resolver : Callable[[Request], int] = default_cost_resolver
+    org_resolver : Callable[[Request], str] = default_org_resolver
